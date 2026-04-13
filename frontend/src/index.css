@@ -1,0 +1,143 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: auto;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 font-sans;
+  }
+
+  .dark body {
+    @apply bg-slate-900 text-gray-100;
+  }
+  
+  h1 {
+    @apply text-3xl font-bold tracking-tight;
+  }
+
+  h2 {
+    @apply text-2xl font-bold tracking-tight;
+  }
+
+  h3 {
+    @apply text-xl font-semibold tracking-tight;
+  }
+
+  h4 {
+    @apply text-lg font-semibold;
+  }
+
+  h5, h6 {
+    @apply text-base font-semibold;
+  }
+
+  p {
+    @apply text-base leading-relaxed;
+  }
+
+  label {
+    @apply text-sm font-medium;
+  }
+
+  input[type="text"],
+  input[type="email"],
+  input[type="number"],
+  input[type="date"],
+  textarea,
+  select {
+    @apply rounded-md border transition-colors;
+  }
+
+  button {
+    @apply transition-all duration-200;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium transition shadow-sm hover:shadow;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md font-medium transition;
+  }
+
+  .card {
+    @apply bg-white dark:bg-slate-800 rounded-lg shadow hover:shadow-lg transition;
+  }
+
+  .badge {
+    @apply inline-block px-3 py-1 text-xs font-semibold rounded-full;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 bg-white dark:bg-slate-700 text-gray-900 dark:text-white border border-gray-300 dark:border-slate-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 transition;
+  }
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slideIn {
+  animation: slideIn 0.3s ease-out;
+}
+
+/* Utilities */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}

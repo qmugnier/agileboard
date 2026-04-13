@@ -1,0 +1,164 @@
+stages:
+  - test
+  - build
+  - push
+
+variables:
+  REGISTRY: harbor.exotec.com
+  REGISTRY_USER: $HARBOR_USER
+  REGISTRY_PASSWORD: $HARBOR_PASSWORD
+  IMAGE_REPO: exotec_product_infra
+  BACKEND_IMAGE_NAME: agile-board-backend
+  FRONTEND_IMAGE_NAME: agile-board-frontend
+
+# ============ TEST STAGE ============
+
+test:backend:
+  stage: test
+  image: python:3.11
+  script:
+    - cd backend
+    - pip install -r requirements.txt
+    - pytest tests/ -v --cov=routers --cov=services --cov-report=term --cov-report=html --cov-report=xml
+    - echo "✅ Backend tests passed with coverage report"
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: backend/coverage.xml
+    paths:
+      - backend/htmlcov/
+    when: always
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  only:
+    - main
+    - develop
+    - merge_requests
+
+test:frontend:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm install
+    - npm run test -- --coverage --passWithNoTests
+    - echo "✅ Frontend tests passed with coverage report"
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: frontend/coverage/cobertura-coverage.xml
+    paths:
+      - frontend/coverage/
+    when: always
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  only:
+    - main
+    - develop
+    - merge_requests
+
+lint:backend:
+  stage: test
+  image: python:3.11
+  script:
+    - cd backend
+    - pip install flake8 pylint
+    - flake8 routers services utils --max-line-length=120 || true
+    - echo "✅ Backend linting complete"
+  allow_failure: true
+  only:
+    - main
+    - develop
+    - merge_requests
+
+lint:frontend:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm install
+    - npm run lint || true
+    - echo "✅ Frontend linting complete"
+  allow_failure: true
+  only:
+    - main
+    - develop
+    - merge_requests
+
+
+# ============ BUILD STAGE ============
+
+build:backend:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "Building backend Docker image..."
+    - docker build -t ${REGISTRY}/${IMAGE_REPO}/${BACKEND_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} ./backend
+    - docker build -t ${REGISTRY}/${IMAGE_REPO}/${BACKEND_IMAGE_NAME}:latest ./backend
+    - echo "✅ Backend image built successfully"
+  only:
+    - main
+    - develop
+
+build:frontend:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "Building frontend Docker image..."
+    - docker build -t ${REGISTRY}/${IMAGE_REPO}/${FRONTEND_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} ./frontend
+    - docker build -t ${REGISTRY}/${IMAGE_REPO}/${FRONTEND_IMAGE_NAME}:latest ./frontend
+    - echo "✅ Frontend image built successfully"
+  only:
+    - main
+    - develop
+
+
+# ============ PUSH STAGE ============
+
+push:backend:
+  stage: push
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "Logging in to Harbor registry..."
+    - echo ${REGISTRY_PASSWORD} | docker login -u ${REGISTRY_USER} --password-stdin ${REGISTRY}
+    
+    - echo "Pushing backend image to Harbor..."
+    - docker push ${REGISTRY}/${IMAGE_REPO}/${BACKEND_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${REGISTRY}/${IMAGE_REPO}/${BACKEND_IMAGE_NAME}:latest
+    
+    - echo "✅ Backend image pushed successfully to ${REGISTRY}/${IMAGE_REPO}/${BACKEND_IMAGE_NAME}"
+  only:
+    - main
+  when: manual
+
+push:frontend:
+  stage: push
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "Logging in to Harbor registry..."
+    - echo ${REGISTRY_PASSWORD} | docker login -u ${REGISTRY_USER} --password-stdin ${REGISTRY}
+    
+    - echo "Pushing frontend image to Harbor..."
+    - docker push ${REGISTRY}/${IMAGE_REPO}/${FRONTEND_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${REGISTRY}/${IMAGE_REPO}/${FRONTEND_IMAGE_NAME}:latest
+    
+    - echo "✅ Frontend image pushed successfully to ${REGISTRY}/${IMAGE_REPO}/${FRONTEND_IMAGE_NAME}"
+  only:
+    - main
+  when: manual
