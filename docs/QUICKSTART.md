@@ -1,202 +1,156 @@
-# 🚀 Quick Start Guide
+# Quick Start Guide
 
-## Your Modern Agile Board is Ready!
+Get Agile Board up and running in minutes.
 
-### What You Got
+## Prerequisites
 
-A complete, production-ready agile management system with:
-- **FastAPI Backend** with SQLite database
-- **React Frontend** with Tailwind CSS
-- **Kanban Board** for sprint management
-- **Analytics Dashboard** with velocity charts
-- **Team Management** with user assignments
-- **CSV Import** from your existing backlog
+- Docker and Docker Compose (recommended), or
+- Python 3.11+ and Node.js 18+
 
----
+## Option 1: Docker Compose (Fastest)
 
-## ⚡ Getting Started (5 minutes)
-
-### Option 1: Windows Users (Easiest)
 ```bash
-# Navigate to agile directory
-cd c:\apps\systemcontroller\agile
-
-# Double-click start.bat
-# OR run in terminal:
-start.bat
+docker-compose up
 ```
 
-### Option 2: macOS/Linux
-```bash
-cd /path/to/agile
-chmod +x start.sh
-./start.sh
-```
+Wait for both services to report healthy status, then open http://localhost:3000 in your browser.
 
-### Option 3: Manual Setup
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000/docs
 
-**Terminal 1 - Backend:**
+To stop: Press Ctrl+C
+
+## Option 2: Local Development Setup
+
+### Backend
+
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # or: venv\Scripts\activate (Windows)
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
 
-**Terminal 2 - Frontend:**
+Backend will be available at http://localhost:8000
+
+### Frontend
+
+In a new terminal:
+
 ```bash
 cd frontend
 npm install
 npm start
 ```
 
----
+Frontend will open at http://localhost:3000
 
-## 🎯 Access the Application
+## First Steps in the Application
 
-- **Frontend**: http://localhost:3000
-- **API Docs**: http://localhost:8000/docs
-- **Direct API**: http://localhost:8000/api
+### 1. Create Your First Project
 
----
+1. Navigate to Configuration (gear icon)
+2. Click "Create New Project"
+3. Enter project name and description
+4. Save
 
-## 📊 Features at a Glance
+### 2. Set Up Your Team
 
-### Kanban Board
-- 4-column workflow: Backlog → Ready → In Progress → Done
-- Click cards to expand and view details
-- Change status with dropdown menu
-- Assign team members to stories
-- See dependencies and business value
+1. In Configuration, go to Team Members
+2. Click "Add Team Member"
+3. Enter name and role
+4. Assign to your project
+5. Save
 
-### Dashboard
-- **Velocity Trends**: Monitor sprint performance over time
-- **Sprint Progress**: Real-time completion tracking
-- **Effort Distribution**: Pie chart of effort breakdown
-- **Story Status**: Visual breakdown of story counts by status
-- **KPI Cards**: Key metrics at a glance
+### 3. Create a Sprint
 
-### Team Management
-- Add team members with roles
-- Assign multiple people to stories
-- Track who's working on what
+1. Go to Configuration > Sprint Settings
+2. Click "Create New Sprint"
+3. Set sprint duration (typically 1-4 weeks)
+4. Configure other settings
+5. Create
 
-### Data Import
-- Your CSV is automatically imported on first run
-- Create sprints and assign stories
-- Track business value and effort estimates
+### 4. Add Stories to Your Backlog
 
----
+1. Navigate to Backlog
+2. Click "Create New Story"
+3. Fill in story details:
+   - Title
+   - Description
+   - Effort estimate
+   - Business value
+4. Save
 
-## 📁 Project Structure
+### 5. Plan Your Sprint
 
-```
-agile/
-├── backend/               # FastAPI server
-│   ├── main.py           # API endpoints & startup
-│   ├── database.py       # SQLAlchemy ORM models
-│   ├── schemas.py        # Pydantic validation
-│   ├── import_utils.py   # CSV import logic
-│   └── requirements.txt  # Dependencies
-│
-├── frontend/             # React app
-│   ├── src/
-│   │   ├── components/   # UI components
-│   │   ├── context/      # State management
-│   │   ├── services/     # API client
-│   │   └── index.css     # Tailwind styles
-│   ├── package.json
-│   └── tailwind.config.js
-│
-├── data/
-│   └── us.csv           # Your backlog
-│
-└── README.md            # Full documentation
-```
+1. Go to Backlog
+2. Drag stories from Backlog section to Sprint section
+3. Assign team members to stories
+4. View in Kanban Board to start work
 
----
+### 6. Track Progress
 
-## 🎨 Customization Examples
+1. Use Kanban Board to move stories through workflow
+2. View Analytics for sprint metrics
+3. Monitor team velocity
 
-### Change Brand Colors
-Edit `frontend/tailwind.config.js`:
-```javascript
-const colors = {
-  primary: "#your-color",      // Main blue
-  secondary: "#your-color",    // Cyan
-  accent: "#your-color",       // Orange/highlight
-  success: "#your-color",      // Green (done)
-  danger: "#your-color",       // Red (blocked)
-}
-```
+## Importing Test Data
 
-### Add More Statuses
-Edit `backend/database.py` UserStory status values
-Edit `frontend/components/KanbanBoard.js` for UI columns
+### Option A: CSV File
 
-### Connect to Remote Database
-Change `DATABASE_URL` in `backend/database.py`:
-```python
-DATABASE_URL = "postgresql://user:pwd@host/db"
-```
+1. Place CSV file in `data/` directory
+2. Columns: ID, Title, Description, Epic, Effort, Business Value
+3. Go to Configuration > Import/Export
+4. Click "Import Stories"
+5. Select your CSV file
 
----
+### Option B: Sample Data
 
-## 🐳 Docker Deployment (Optional)
+Sample data is provided in `data/us.csv` for testing.
+
+## Stop and Clean Up
+
+### Docker Compose
 
 ```bash
-# Build and run with Docker Compose
-docker-compose up --build
-
-# Access at:
-# Frontend: http://localhost:3000
-# Backend: http://localhost:8000
+docker-compose down
+docker system prune  # Optional: remove unused images
 ```
 
----
+### Local Development
 
-## 🆘 Troubleshooting
+Stop terminals with Ctrl+C. To reset database:
 
-**"Port 3000 already in use"**
 ```bash
-# Use different port
-PORT=3001 npm start
-```
-
-**"Port 8000 already in use"**
-```python
-# In backend/main.py, change:
-uvicorn.run(app, host="0.0.0.0", port=8001)
-```
-
-**Database corrupted?**
-```bash
-# Delete and rebuild
+# Remove database file
 rm backend/agile.db
-python backend/main.py  # Will recreate and import CSV
+
+# Restart backend
+cd backend
+python main.py
 ```
 
-**API not connecting?**
-Check `frontend/.env`:
-```
-REACT_APP_API_URL=http://localhost:8000/api
-```
+## Troubleshooting
 
----
+**Port already in use:**
+- Docker: `docker-compose down` first
+- Local: Check what's using port 3000/8000
 
-## 📈 Key API Endpoints
+**Database errors:**
+- Delete `agile.db` file and restart
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/sprints` | List all sprints |
-| POST | `/api/sprints` | Create new sprint |
-| GET | `/api/user-stories` | Get stories (filterable) |
-| PUT | `/api/user-stories/{id}` | Update story status/sprint |
-| POST | `/api/user-stories/{id}/assign` | Assign user to story |
-| GET | `/api/team-members` | List team |
-| GET | `/api/stats/velocity` | Velocity metrics |
-| GET | `/api/stats/active-sprint` | Current sprint stats |
+**API connection errors:**
+- Ensure backend is running
+- Check REACT_APP_API_URL is correct
+
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more help.
+
+## Next Steps
+
+- Read [USER_GUIDE.md](USER_GUIDE.md) to learn core features
+- Check [ADMIN_GUIDE.md](ADMIN_GUIDE.md) for deployment
+- Explore API with Swagger at http://localhost:8000/docs
 
 ---
 

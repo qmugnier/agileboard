@@ -17,11 +17,13 @@ frontend/package-lock.json
 .vscode/*
 !.vscode/extensions.json
 .idea
+.coverage
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
+
 *.sw?
 
 release
@@ -36,6 +38,7 @@ __pycache__/
 **/.pytest_cache/
 **/.venv/
 **/coverage/
+
 **/build/
 *.db
 **/.env
