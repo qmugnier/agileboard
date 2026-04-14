@@ -95,11 +95,15 @@ export const teamMemberAPI = {
 
 // Projects
 export const projectAPI = {
-  getAll: () => api.get('/projects'),
+  getAll: (includeHidden = false) => {
+    const params = includeHidden ? { include_hidden: true } : {};
+    return api.get('/projects', { params });
+  },
   getById: (id) => api.get(`/projects/${id}`),
   create: (data) => api.post('/projects', data),
   update: (id, data) => api.put(`/projects/${id}`, data),
   delete: (id) => api.delete(`/projects/${id}`),
+  close: (id) => api.post(`/projects/${id}/close`),
   getSprints: (projectId) => api.get(`/projects/${projectId}/sprints`),
   checkSprintReduction: (projectId, newSprintCount) => api.get(`/projects/${projectId}/check-sprint-reduction?new_sprint_count=${newSprintCount}`),  
   // Project Statuses

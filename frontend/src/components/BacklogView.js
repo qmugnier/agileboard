@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { FiEdit3, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
+import { FiEdit3, FiPlus, FiTrash2, FiX, FiAlertCircle } from 'react-icons/fi';
 import clsx from 'clsx';
 import { useAppContext } from '../context/AppContext';
 import { StoryDetailView } from './StoryDetailView';
@@ -7,7 +7,7 @@ import { FibonacciEffortSelector } from './FibonacciEffortSelector';
 import { userStoryAPI } from '../services/api';
 import axios from 'axios';
 
-const BacklogTable = ({ stories, sprints, projectStatuses, onStatusChange, onSprintChange, onAssignUser, hideCompleted, teamMembers, onAssign, onUnassign, onOpenDetail, onDelete, setError, getForecastedSprints, isReadOnlyForSprint = false, targetSprintId = null, draggedStory, setDraggedStory, setReopenConfirmation }) => {
+const BacklogTable = ({ stories, sprints, projectStatuses, onStatusChange, onSprintChange, onAssignUser, hideCompleted, teamMembers, onAssign, onUnassign, onOpenDetail, onDelete, setError, getForecastedSprints, isReadOnlyForSprint = false, targetSprintId = null, draggedStory, setDraggedStory, setReopenConfirmation, isProjectClosed = false, currentProject = null }) => {
   const [expandedId, setExpandedId] = useState(null);
   const scrollContainerRef = useRef(null);
   const scrollPositionRef = useRef({ scrollX: 0, scrollY: 0 });
@@ -105,8 +105,8 @@ const BacklogTable = ({ stories, sprints, projectStatuses, onStatusChange, onSpr
   };
 
   const handleDragStart = (e, story) => {
-    // Prevent dragging if story has done or final status
-    if (isReadOnlyForSprint || story.status === 'done' || isFinalStatus(story.status)) {
+    // Prevent dragging if story has done or final status, or if project is closed
+    if (isReadOnlyForSprint || isProjectClosed || story.status === 'done' || isFinalStatus(story.status)) {
       e.preventDefault();
       return;
     }
@@ -129,7 +129,7 @@ const BacklogTable = ({ stories, sprints, projectStatuses, onStatusChange, onSpr
 
   const handleDrop = (e, targetSprintId) => {
     e.preventDefault();
-    if (!draggedStory || isReadOnlyForSprint) return;
+    if (!draggedStory || isReadOnlyForSprint || isProjectClosed) return;
     
     // Use the passed targetSprintId from the section, or fall back to story's sprint_id
     const sprintId = targetSprintId !== null ? targetSprintId : draggedStory.sprint_id;
@@ -253,11 +253,18 @@ const BacklogTable = ({ stories, sprints, projectStatuses, onStatusChange, onSpr
                       )}
                     >
                       <option value="">Backlog</option>
-                      {getForecastedSprints && getForecastedSprints().map((sprint) => (
-                        <option key={sprint.id} value={sprint.id} disabled={sprint.status === 'active' || sprint.status === 'closed'}>
-                          {sprint.name} {(sprint.status === 'active' || sprint.status === 'closed') ? `(${sprint.status.charAt(0).toUpperCase() + sprint.status.slice(1)} - Read Only)` : ''}
-                        </option>
-                      ))}
+                      {getForecastedSprints && getForecastedSprints().map((sprint) => {
+                        // When toggle is on, treat active sprint like non-active
+                        const effectiveStatus = (sprint.status === 'active' && currentProject?.allow_backlog_to_running_sprint)
+                          ? 'non-active'
+                          : sprint.status;
+                        const isDisabled = effectiveStatus === 'closed' || (effectiveStatus === 'active' && !currentProject?.allow_backlog_to_running_sprint);
+                        return (
+                          <option key={sprint.id} value={sprint.id} disabled={isDisabled}>
+                            {sprint.name} {(effectiveStatus === 'closed') ? '(Closed - Read Only)' : (isDisabled && sprint.status === 'active') ? '(Active - Read Only)' : ''}
+                          </option>
+                        );
+                      })}
                     </select>
                   </td>
                   <td className="px-4 py-3">
@@ -497,6 +504,11 @@ export const BacklogView = () => {
   const [orderBy, setOrderBy] = useState('default'); // default, assignee_asc, creation_date_asc, epic_asc, effort_asc, effort_desc, business_value_asc, business_value_desc
   const [reopenConfirmation, setReopenConfirmation] = useState(null); // { storyId, storyTitle, isClosed }
   const [blockingInfo, setBlockingInfo] = useState({}); // { storyId: { blockedBy: [], blocking: [] } }
+  
+  // Check if current project is closed
+  const currentProject = projects?.find(p => p.id === selectedProjectId);
+  const isProjectClosed = currentProject?.closed_date ? true : false;
+  
   const [newStory, setNewStory] = useState({
     title: '',
     description: '',
@@ -628,13 +640,15 @@ export const BacklogView = () => {
     if (sprintId) {
       const targetSprint = sprints?.find(s => s.id === sprintId);
       if (targetSprint && targetSprint.status === 'active') {
-        setError('Cannot assign stories to an active sprint');
-        setTimeout(() => setError(''), 4000);
-        return;
+        // When toggle is OFF, prevent ANY story from being assigned to active sprint
+        const allowBacklogToRunning = currentProject?.allow_backlog_to_running_sprint;
+        if (!allowBacklogToRunning) {
+          setError('Cannot assign stories to an active sprint');
+          return;
+        }
       }
       if (targetSprint && targetSprint.status === 'closed') {
         setError('Cannot assign stories to a closed sprint');
-        setTimeout(() => setError(''), 4000);
         return;
       }
       // For non-active, non-closed sprints: enforce "ready" status only
@@ -645,7 +659,9 @@ export const BacklogView = () => {
     }
 
     // If moving from backlog to a sprint, set status to "ready"
+    // Note: When allow_backlog_to_running_sprint is enabled, we bypass workflow checks for this move
     if (!story.sprint_id && sprintId) {
+      console.log('BacklogView: Moving from backlog to sprint, allow_backlog_to_running:', currentProject?.allow_backlog_to_running_sprint);
       moveStoryToSprint(storyId, sprintId, 'ready');
     }
     // If moving from sprint back to backlog, set status to "backlog"
@@ -672,7 +688,6 @@ export const BacklogView = () => {
     if (!story.sprint_id) {
       if (status !== 'backlog') {
         setError('⚠️ Unassigned backlog stories can only have "Backlog" status. Please assign to a sprint first to change status.');
-        setTimeout(() => setError(''), 4000);
         return;
       }
       // Trying to change from one status to backlog while already in backlog - this is caught above
@@ -682,11 +697,15 @@ export const BacklogView = () => {
     // ============ RULE 2: Stories IN a sprint follow sprint-based transition rules ============
     const currentSprint = sprints?.find(s => s.id === story.sprint_id);
     
+    // When toggle is on and sprint is active, treat it like a non-active sprint
+    const effectiveSprintStatus = (currentSprint?.status === 'active' && currentProject?.allow_backlog_to_running_sprint)
+      ? 'non-active'
+      : currentSprint?.status;
+    
     // Closed sprints: only allow reopening to backlog (which removes from sprint)
-    if (currentSprint && currentSprint.status === 'closed') {
+    if (effectiveSprintStatus === 'closed') {
       if (status !== 'backlog') {
         setError('⚠️ Closed sprints are locked. Only reopening stories back to backlog is allowed.');
-        setTimeout(() => setError(''), 3000);
         return;
       }
       // Allow moving to backlog = removing from sprint
@@ -694,33 +713,37 @@ export const BacklogView = () => {
       return;
     }
 
-    // Non-active, non-closed sprints: only allow backlog ↔ ready transitions
-    if (currentSprint && currentSprint.status !== 'active' && currentSprint.status !== 'closed') {
+    // Non-active sprints (including active with toggle): only allow backlog ↔ ready transitions
+    if (effectiveSprintStatus !== 'active') {
       const isBacklogReadyTransition = 
         (story.status === 'backlog' && status === 'ready') ||
         (story.status === 'ready' && status === 'backlog');
       
       if (!isBacklogReadyTransition) {
-        setError('⚠️ Non-active sprints only allow "Backlog ↔ Ready" transitions.');
-        setTimeout(() => setError(''), 4000);
+        setError('⚠️ Sprint only allows "Backlog ↔ Ready" transitions.');
         return;
       }
-      // Valid backlog ↔ ready transition in non-active sprint
+      // Valid backlog ↔ ready transition
       updateStoryStatus(storyId, status);
       return;
     }
 
-    // Active sprints: use full workflow validation
-    if (currentSprint && currentSprint.status === 'active') {
+    // Active sprints without toggle: use full workflow validation
+    if (effectiveSprintStatus === 'active') {
+      // Check if trying to move to backlog
+      if (status === 'backlog') {
+        setError('⚠️ Cannot move stories to backlog when in an active sprint. Story must be completed (final status) to close it, or close the sprint first.');
+        return;
+      }
+      
       // Check if trying to close a story that's blocking others
       const isFinalStatus = projectStatuses?.some(s => s.status_name === status && s.is_final);
       if (isFinalStatus && (story.blocking || []).length > 0) {
         const blockedStories = story.blocking.join(', ');
         setError(`⚠️ Cannot close this story - it is blocking other stories: ${blockedStories}`);
-        setTimeout(() => setError(''), 4000);
         return;
       }
-      // In active sprints, all transitions are allowed (backend will validate against workflow)
+      // In active sprints without toggle, all other transitions allowed (backend will validate against workflow)
       updateStoryStatus(storyId, status);
       return;
     }
@@ -738,8 +761,9 @@ export const BacklogView = () => {
   const handleTableDrop = (e, sectionSprintId) => {
     e.preventDefault();
     if (!draggedStory) return;
-    const targetSprintId = sectionSprintId !== null ? sectionSprintId : draggedStory.sprint_id;
-    handleSprintChange(draggedStory.story_id, targetSprintId ? parseInt(targetSprintId) : null);
+    // When dropping on backlog section (sectionSprintId=null), move to backlog (no sprint)
+    // When dropping on sprint section (sectionSprintId=number), move to that sprint  
+    handleSprintChange(draggedStory.story_id, sectionSprintId ? parseInt(sectionSprintId) : null);
     setDraggedStory(null);
   };
 
@@ -853,7 +877,7 @@ export const BacklogView = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className={clsx('space-y-6', isProjectClosed && 'opacity-70')}>
       {error && (
         <div className="bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300 p-4 rounded-lg flex justify-between items-start gap-4">
           <div className="flex-1">{error}</div>
@@ -862,12 +886,23 @@ export const BacklogView = () => {
           </button>
         </div>
       )}
+      
+      {isProjectClosed && (
+        <div className="bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-300 p-4 rounded-lg flex items-center gap-2">
+          <FiAlertCircle className="text-red-600 dark:text-red-400 flex-shrink-0" size={18} />
+          <p className="text-sm font-medium">
+            This project is closed and read-only. No changes can be made to stories.
+          </p>
+        </div>
+      )}
+      
       <div className="flex items-center justify-between flex-wrap gap-4">
         <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Backlog Details</h2>
         <div className="flex items-center gap-4 flex-wrap">
           <button
             onClick={() => setShowCreateForm(!showCreateForm)}
-            className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium text-sm flex items-center gap-2 transition"
+            disabled={isProjectClosed}
+            className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium text-sm flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
           >
             <FiPlus size={18} />
             New User Story
@@ -875,7 +910,8 @@ export const BacklogView = () => {
           <select
             value={selectedAssignee || ''}
             onChange={(e) => setSelectedAssignee(e.target.value || null)}
-            className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isProjectClosed}
+            className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <option value="">All Assignees</option>
             <option value="unassigned">Unassigned</option>
@@ -883,19 +919,21 @@ export const BacklogView = () => {
               <option key={member.id} value={member.id}>{member.name}</option>
             ))}
           </select>
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer disabled:opacity-50">
             <input
               type="checkbox"
               checked={hideCompleted}
               onChange={(e) => setHideCompleted(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 cursor-pointer"
+              disabled={isProjectClosed}
+              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 cursor-pointer disabled:cursor-not-allowed"
             />
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Hide Completed</span>
           </label>
           <select
             value={orderBy}
             onChange={(e) => setOrderBy(e.target.value)}
-            className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isProjectClosed}
+            className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <option value="default">Order by - Default</option>
             <option value="assignee_asc">Order by - Assignee</option>
@@ -913,7 +951,7 @@ export const BacklogView = () => {
       </div>
 
       {/* Create New Story Form */}
-      {showCreateForm && (
+      {showCreateForm && !isProjectClosed && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Create New User Story</h3>
           <form onSubmit={handleCreateStory} className="space-y-4">
@@ -1022,6 +1060,8 @@ export const BacklogView = () => {
               draggedStory={draggedStory}
               setDraggedStory={setDraggedStory}
               setReopenConfirmation={setReopenConfirmation}
+              isProjectClosed={isProjectClosed}
+              currentProject={currentProject}
             />
           </div>
         );
@@ -1044,9 +1084,11 @@ export const BacklogView = () => {
           >
             <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
               {activeSprint.name}
-              <span className="text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 px-2 py-1 rounded font-medium">
-                Active - Read Only
-              </span>
+              {!currentProject?.allow_backlog_to_running_sprint && (
+                <span className="text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 px-2 py-1 rounded font-medium">
+                  Active - Read Only
+                </span>
+              )}
               ({displayStories.length})
             </h3>
             <BacklogTable 
@@ -1063,11 +1105,13 @@ export const BacklogView = () => {
               onDelete={handleDeleteStory}
               setError={setError}
               getForecastedSprints={getForecastedSprints}
-              isReadOnlyForSprint={true}
+              isReadOnlyForSprint={!currentProject?.allow_backlog_to_running_sprint}
               targetSprintId={activeSprint.id}
               draggedStory={draggedStory}
               setDraggedStory={setDraggedStory}
               setReopenConfirmation={setReopenConfirmation}
+              isProjectClosed={isProjectClosed}
+              currentProject={currentProject}
             />
           </div>
         ) : null;
@@ -1110,6 +1154,8 @@ export const BacklogView = () => {
               draggedStory={draggedStory}
               setDraggedStory={setDraggedStory}
               setReopenConfirmation={setReopenConfirmation}
+              isProjectClosed={isProjectClosed}
+              currentProject={currentProject}
             />
           </div>
         ) : null;

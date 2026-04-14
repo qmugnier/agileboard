@@ -95,8 +95,6 @@ export const SprintSelector = ({ sprints, selectedSprintId, onSelect, projects, 
   const { fetchAllData } = useAppContext();
   const [sprintLoading, setSprintLoading] = useState(false);
   const [sprintError, setSprintError] = useState('');
-  
-  // Filter sprints by current project and forecasted count
   const getProjectSprints = () => {
     if (!selectedProjectId || !projects) return [];
     

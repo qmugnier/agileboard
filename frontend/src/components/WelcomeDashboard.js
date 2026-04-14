@@ -13,56 +13,37 @@ export const WelcomeDashboard = () => {
   // Get current user's team member by ID (user object has team_member_id)
   const currentTeamMember = user?.team_member_id ? teamMembers.find((tm) => tm.id === user.team_member_id) : null;
 
-  // Get final status names across all projects
-  const finalStatusNames = useMemo(() => {
-    const finalStatuses = new Set();
-    // Collect all final statuses from stories
-    userStories.forEach(story => {
-      // Check if story's status corresponds to a final status
-      // We'll check based on common final status markers
-      if (story.status === 'done') {
-        finalStatuses.add(story.status);
-      }
-    });
-    return Array.from(finalStatuses);
-  }, [userStories]);
-
-  // Filter stories assigned to current user - GLOBAL across all projects with active sprints
+  // Filter stories assigned to current user - GLOBAL across ALL projects (now and past)
   const myStories = useMemo(() => {
     if (!currentTeamMember) return [];
     
-    // Get projects that have active sprints
-    const projectsWithActiveSprints = new Set();
-    sprints.forEach(sprint => {
-      if (sprint.status === 'active') {
-        projectsWithActiveSprints.add(sprint.project_id);
-      }
-    });
-    
-    // Filter stories: assigned to me AND in a project with active sprint
+    // Get ALL stories assigned to me across ALL projects (no sprint/project filters)
     return userStories.filter((story) => {
-      const isInProjectWithActiveSprint = projectsWithActiveSprints.has(story.project_id);
       const isAssignedToMe = story.assigned_to?.some((member) => member.id === currentTeamMember.id);
-      return isAssignedToMe && isInProjectWithActiveSprint;
+      return isAssignedToMe;
     });
-  }, [userStories, sprints, currentTeamMember]);
+  }, [userStories, currentTeamMember]);
 
-  // Calculate project activity metrics - all projects user is assigned to
+  // Calculate project activity metrics - all projects, but only those where user has assignments
   const projectMetrics = useMemo(() => {
     if (!currentTeamMember) return [];
     
     const metrics = [];
     projects.forEach((project) => {
-      const projectStories = userStories.filter((s) => 
+      // Check if user has any assignment in this project (at any point in history)
+      const userHasAssignmentInProject = userStories.some((s) => 
         s.project_id === project.id && s.assigned_to?.some((m) => m.id === currentTeamMember.id)
       );
       
-      if (projectStories.length > 0) {
+      if (userHasAssignmentInProject) {
+        // Get ALL stories in this project (not just user's)
+        const projectStories = userStories.filter((s) => s.project_id === project.id);
+        
         const total = projectStories.length;
         const completed = projectStories.filter((s) => s.status === 'done').length;
         const inProgress = projectStories.filter((s) => s.status === 'in_progress').length;
         const completionPercent = Math.round((completed / total) * 100);
-        const activityLevel = (inProgress / total) * 100; // Higher if more in progress
+        const activityLevel = (inProgress / total) * 100; // Higher if more in progress across entire project
         
         metrics.push({
           projectId: project.id,
@@ -82,31 +63,41 @@ export const WelcomeDashboard = () => {
   // Calculate statistics
   const stats = useMemo(() => {
     const now = new Date();
-    const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    // Get closed sprints
+    const closedSprintIds = new Set(
+      sprints.filter((s) => s.is_closed || s.status === 'closed').map((s) => s.id)
+    );
 
     return {
-      total: myStories.length,
-      ongoing: myStories.filter((s) => s.status !== 'done' && !finalStatusNames.includes(s.status)).length,
-      closed: myStories.filter((s) => finalStatusNames.includes(s.status) || s.status === 'done').length,
+      total: myStories.length, // All cards assigned to logged user
+      ongoing: myStories.filter((s) => s.status !== 'done' && s.status !== 'backlog').length, // All non-done excluding backlog
+      completed: myStories.filter((s) => s.status === 'done' && !closedSprintIds.has(s.sprint_id)).length, // Done in non-closed sprints
       newlyAssigned: myStories.filter((s) => {
         const createdDate = new Date(s.created_at || now);
-        return createdDate > oneWeekAgo && !finalStatusNames.includes(s.status) && s.status !== 'done';
+        return createdDate > oneDayAgo; // Past 1 day (today and yesterday)
       }).length,
-      inProgress: myStories.filter((s) => s.status !== 'done' && !finalStatusNames.includes(s.status)).length,
+      inProgress: myStories.filter((s) => s.status === 'in_progress').length, // Specifically in progress
     };
-  }, [myStories, finalStatusNames]);
+  }, [myStories, sprints]);
 
-  // Group stories by status
+  // Group stories by status with user's requirements
   const storiesByStatus = useMemo(() => {
+    // Closed sprints - to exclude from completed
+    const closedSprintIds = new Set(
+      sprints.filter((s) => s.is_closed || s.status === 'closed').map((s) => s.id)
+    );
+
     return {
-      // Ready to Start: backlog or ready status
-      ready: myStories.filter((s) => s.status === 'backlog' || s.status === 'ready'),
-      // In Progress: not done and not final statuses
-      in_progress: myStories.filter((s) => s.status !== 'done' && !finalStatusNames.includes(s.status)),
-      // Completed: final status or done
-      done: myStories.filter((s) => finalStatusNames.includes(s.status) || s.status === 'done'),
+      // Ready to Start: ready status only
+      ready: myStories.filter((s) => s.status === 'ready'),
+      // In Progress: exclude ready, done, and backlog statuses
+      in_progress: myStories.filter((s) => s.status !== 'done' && s.status !== 'ready' && s.status !== 'backlog'),
+      // Completed: done status in non-closed sprints
+      done: myStories.filter((s) => s.status === 'done' && !closedSprintIds.has(s.sprint_id)),
     };
-  }, [myStories, finalStatusNames]);
+  }, [myStories, sprints]);
 
   const StatCard = ({ icon: Icon, label, value, color, onClick }) => (
     <div
@@ -215,7 +206,7 @@ export const WelcomeDashboard = () => {
           Welcome back, {user?.team_member?.name || user?.email || 'User'}! 👋
         </h1>
         <p className={clsx('mt-2', isDark ? 'text-slate-400' : 'text-gray-600')}>
-          Global view of your work across all active sprints
+          Global view of your work across all projects (current and past)
         </p>
       </div>
 
@@ -240,7 +231,7 @@ export const WelcomeDashboard = () => {
         <StatCard icon={FiClock} label="Ongoing" value={stats.ongoing} color="amber" />
         <StatCard icon={FiTrendingUp} label="In Progress" value={stats.inProgress} color="purple" />
         <StatCard icon={FiAlertCircle} label="Newly Assigned" value={stats.newlyAssigned} color="rose" />
-        <StatCard icon={FiCheckCircle} label="Completed" value={stats.closed} color="emerald" />
+        <StatCard icon={FiCheckCircle} label="Completed" value={stats.completed} color="emerald" />
       </div>
 
       {/* Stories by Status */}

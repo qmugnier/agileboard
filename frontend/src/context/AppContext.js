@@ -66,7 +66,6 @@ export const AppProvider = ({ children }) => {
           const requests = [
             projectAPI.getStatuses(projectToSelect.id),
             statsAPI.getVelocity(projectToSelect.id, analyticsTimeframe).catch(() => ({ data: { sprints: [], average_velocity: 0, trend: 'down' } })),
-            userStoryAPI.getAll(projectToSelect.id),
           ];
           
           // Only fetch activeRes for non-project timeframes
@@ -75,13 +74,12 @@ export const AppProvider = ({ children }) => {
           }
           
           const results = await Promise.all(requests);
-          const [statusesRes, velocityRes, storiesRes, activeRes] = analyticsTimeframe !== 'project' 
+          const [statusesRes, velocityRes, activeRes] = analyticsTimeframe !== 'project' 
             ? results 
-            : [results[0], results[1], results[2], null];
+            : [results[0], results[1], null];
           
           setProjectStatuses(statusesRes.data);
           setVelocityMetrics(velocityRes.data);
-          setUserStories(storiesRes.data);
           setActiveSprint(activeRes?.data || null);
           
           if (activeRes?.data) {
@@ -139,7 +137,11 @@ export const AppProvider = ({ children }) => {
           setVelocityMetrics(velocityRes.data);
           setActiveSprint(activeRes?.data || null);
           setProjectStatuses(statusesRes.data);
-          setUserStories(storiesRes.data);
+          // Merge project-specific stories with existing global stories to ensure UI stays up-to-date
+          setUserStories(prevStories => {
+            const otherProjectStories = prevStories.filter(s => s.project_id !== selectedProjectId);
+            return [...otherProjectStories, ...(storiesRes.data || [])];
+          });
           
           // Update selected sprint to active sprint if available
           if (activeRes?.data) {
@@ -392,6 +394,11 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  // Clear error state
+  const clearError = () => {
+    setError(null);
+  };
+
   // Light refresh for projects and team members without affecting selectedProjectId
   const refreshProjectsAndTeamMembers = async () => {
     try {
@@ -417,6 +424,7 @@ export const AppProvider = ({ children }) => {
     projectWideMetrics,
     loading,
     error,
+    clearError,
     selectedSprintId,
     setSelectedSprintId,
     selectedProjectId,

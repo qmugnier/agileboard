@@ -29,13 +29,14 @@ const StatCard = ({ label, value, unit = '', trend, color = 'blue' }) => {
 };
 
 export const Dashboard = () => {
-  const { velocityMetrics, projectWideMetrics, analyticsTimeframe, setAnalyticsTimeframe, error, selectedProjectId, userStories = [] } = useAppContext();
+  const { velocityMetrics, projectWideMetrics, analyticsTimeframe, setAnalyticsTimeframe, error, userStories = [] } = useAppContext();
   const [sprintDetails, setSprintDetails] = useState(null);
   const [dailyBreakdown, setDailyBreakdown] = useState(null);
 
-  // Fetch sprint details based on current timeframe
+  // Fetch sprint details - NOT filtered by selected project
+  // This shows global metrics across all projects
   useEffect(() => {
-    if (!selectedProjectId || analyticsTimeframe === 'project') {
+    if (analyticsTimeframe === 'project') {
       setSprintDetails(null);
       setDailyBreakdown(null);
       return;
@@ -43,7 +44,8 @@ export const Dashboard = () => {
 
     const fetchSprintDetails = async () => {
       try {
-        const response = await statsAPI.getActiveSprint(selectedProjectId, analyticsTimeframe);
+        // Fetch active sprint data (globally, across all projects)
+        const response = await statsAPI.getActiveSprint(null, analyticsTimeframe);
         setSprintDetails(response.data);
         
         // Fetch daily breakdown for this specific sprint
@@ -65,7 +67,7 @@ export const Dashboard = () => {
     };
 
     fetchSprintDetails();
-  }, [selectedProjectId, analyticsTimeframe]);
+  }, [analyticsTimeframe]);
 
   // Check if we have any data at all
   const hasData = velocityMetrics && velocityMetrics.sprints && velocityMetrics.sprints.length > 0;
@@ -233,9 +235,6 @@ export const Dashboard = () => {
         <StatCard
           label="Completed Tasks"
           value={projectWideMetrics?.sprints?.reduce((sum, s) => sum + (s.completed_stories || 0), 0) || 0}
-          unit="stories"
-          color="cyan"
-        />
           unit="stories"
           color="cyan"
         />

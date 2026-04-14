@@ -12,6 +12,7 @@ const MemberAssignmentTable = ({
   memberAssignmentCounts = {},
   onToggleMember,
   loading = false,
+  isReadOnly = false,
   sortBy = 'name', // 'name', 'assigned', 'count'
   sortOrder = 'asc', // 'asc', 'desc'
   onSortChange,
@@ -180,7 +181,7 @@ const MemberAssignmentTable = ({
                 const isAssigned = projectMembers.some(m => m.id === member.id);
                 const assignmentCount = memberAssignmentCounts[member.id] || 0;
                 const isLocked = isAssigned && assignmentCount > 0;
-                const canToggle = !isLocked;
+                const canToggle = !isLocked && !isReadOnly;
                 
                 return (
                   <tr
@@ -211,13 +212,15 @@ const MemberAssignmentTable = ({
                         <button
                           onClick={() => canToggle && onToggleMember(member.id, isAssigned)}
                           disabled={!canToggle || loading}
-                          title={!canToggle ? `Locked - Member has ${assignmentCount} assignment(s). Remove assignments first.` : ''}
+                          title={isReadOnly ? 'Project is closed and read-only' : (!canToggle && isLocked ? `Locked - Member has ${assignmentCount} assignment(s). Remove assignments first.` : '')}
                           className={clsx(
                             'px-4 py-2 rounded font-medium transition text-sm',
                             !canToggle
                               ? 'cursor-not-allowed opacity-75'
                               : 'cursor-pointer hover:shadow-md',
-                            isLocked
+                            isReadOnly
+                              ? 'bg-gray-300 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
+                              : isLocked
                               ? 'bg-orange-500 hover:bg-orange-600 dark:bg-orange-600 dark:hover:bg-orange-700 text-white'
                               : isAssigned
                               ? 'bg-purple-500 hover:bg-purple-600 dark:bg-purple-600 dark:hover:bg-purple-700 text-white'

@@ -337,8 +337,10 @@ class ProjectBase(BaseModel):
     name: str
     description: Optional[str] = None
     is_default: bool = False
+    is_hidden: bool = False
     num_forecasted_sprints: int = 5  # Number of planned sprints
     default_sprint_duration_days: int = 14  # Default sprint duration in days
+    allow_backlog_to_running_sprint: int = 0  # Allow moving backlog to/from running sprints
 
 class ProjectCreate(ProjectBase):
     pass
@@ -347,13 +349,16 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     is_default: Optional[bool] = None
+    is_hidden: Optional[bool] = None
     num_forecasted_sprints: Optional[int] = None
     default_sprint_duration_days: Optional[int] = None
+    allow_backlog_to_running_sprint: Optional[int] = None
 
 class Project(ProjectBase):
     model_config = ConfigDict(from_attributes=True)
     
     id: int
+    closed_date: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     statuses: List[ProjectStatus] = []

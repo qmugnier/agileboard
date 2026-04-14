@@ -6,7 +6,7 @@ import { useTheme } from '../context/ThemeContext';
 import { StoryDetailView } from './StoryDetailView';
 import { projectAPI, userStoryAPI } from '../services/api';
 
-const Card = React.memo(({ story, blockingInfo, onDragStart, teamMembers, onAssign, onUnassign, statusColor = '#3B82F6', isSprintClosed = false, onOpenDetail, isFinal = false }) => {
+const Card = React.memo(({ story, blockingInfo, onDragStart, teamMembers, onAssign, onUnassign, statusColor = '#3B82F6', isSprintClosed = false, onOpenDetail, isFinal = false, isProjectClosed = false }) => {
   const [expanded, setExpanded] = useState(false);
 
   const getEffortColor = (effort) => {
@@ -42,7 +42,8 @@ const Card = React.memo(({ story, blockingInfo, onDragStart, teamMembers, onAssi
       }}
       className={clsx(
         'bg-white dark:bg-gray-800 rounded-lg shadow hover:shadow-lg transition p-4 mb-3 active:opacity-75 animate-fadeIn dark:text-gray-100',
-        (story.status === 'done' || isFinal || isSprintClosed) ? 'cursor-not-allowed opacity-60' : 'cursor-move hover:shadow-lg'
+        (story.status === 'done' || isFinal || isSprintClosed) ? 'cursor-not-allowed opacity-60' : 'cursor-move hover:shadow-lg',
+        isProjectClosed && 'opacity-50'
       )}
       style={{ borderLeftWidth: '4px', borderLeftColor: statusColor }}
     >
@@ -185,7 +186,7 @@ const Card = React.memo(({ story, blockingInfo, onDragStart, teamMembers, onAssi
   );
 });
 
-const Column = React.memo(({ title, status, stories, blockingInfo, onDragStart, onDragOver, onDrop, teamMembers, statusCount, onAssign, onUnassign, statusColor = '#3B82F6', onColumnDragStart, onColumnDragOver, onColumnDrop, isSprintClosed = false, onOpenDetail, projectStatusObj = null, columnWidthStyle = { flex: '1 1 auto', minWidth: '250px' } }) => {
+const Column = React.memo(({ title, status, stories, blockingInfo, onDragStart, onDragOver, onDrop, teamMembers, statusCount, onAssign, onUnassign, statusColor = '#3B82F6', onColumnDragStart, onColumnDragOver, onColumnDrop, isSprintClosed = false, isProjectClosed = false, onOpenDetail, projectStatusObj = null, columnWidthStyle = { flex: '1 1 auto', minWidth: '250px' } }) => {
   const isFinal = !!projectStatusObj?.is_final;
   return (
     <div
@@ -231,6 +232,7 @@ const Column = React.memo(({ title, status, stories, blockingInfo, onDragStart, 
             isSprintClosed={isSprintClosed}
             onOpenDetail={onOpenDetail}
             isFinal={isFinal}
+            isProjectClosed={isProjectClosed}
           />
         ))}
 
@@ -250,6 +252,7 @@ const Column = React.memo(({ title, status, stories, blockingInfo, onDragStart, 
     prevProps.statusColor === nextProps.statusColor &&
     prevProps.statusCount === nextProps.statusCount &&
     prevProps.isSprintClosed === nextProps.isSprintClosed &&
+    prevProps.isProjectClosed === nextProps.isProjectClosed &&
     prevProps.onDragStart === nextProps.onDragStart &&
     prevProps.onDrop === nextProps.onDrop &&
     prevProps.onAssign === nextProps.onAssign &&
@@ -261,6 +264,10 @@ export const KanbanBoard = () => {
   const { userStories, selectedSprintId, projectStatuses, selectedProjectId, projects, updateStoryStatus, moveStoryToSprint, teamMembers, assignStory, unassignStory, sprints } = useAppContext();
   const [draggedStory, setDraggedStory] = useState(null);
   const [draggedColumnStatus, setDraggedColumnStatus] = useState(null);
+  
+  // Check if current project is closed
+  const currentProject = projects?.find(p => p.id === selectedProjectId);
+  const isProjectClosed = currentProject?.closed_date ? true : false;
   const [selectedAssignee, setSelectedAssignee] = useState(null);
   const [selectedStoryDetail, setSelectedStoryDetail] = useState(null);
   const [transitions, setTransitions] = useState([]);
@@ -376,8 +383,9 @@ export const KanbanBoard = () => {
   }, [selectedProjectId]);
 
   // Fetch valid transitions when project changes
+  // Skip if project allows backlog-to-running-sprint (we don't need to validate transitions)
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (!selectedProjectId || currentProject?.allow_backlog_to_running_sprint) {
       setTransitions([]);
       return;
     }
@@ -385,8 +393,6 @@ export const KanbanBoard = () => {
     const fetchTransitions = async () => {
       try {
         const res = await projectAPI.getTransitions(selectedProjectId);
-        console.log('Fetched transitions for project', selectedProjectId, ':', res.data);
-        console.log('Transitions summary:', res.data?.map(t => `${t.from_status_id}→${t.to_status_id}`) || []);
         setTransitions(res.data || []);
       } catch (err) {
         console.error('Error fetching transitions:', err);
@@ -395,7 +401,7 @@ export const KanbanBoard = () => {
     };
 
     fetchTransitions();
-  }, [selectedProjectId]);
+  }, [selectedProjectId, currentProject?.allow_backlog_to_running_sprint]);
 
   // Get team members for the current project
   const getProjectTeamMembers = () => {
@@ -585,7 +591,7 @@ export const KanbanBoard = () => {
   }, [columns, containerWidth]);
 
   const handleDragStart = (e, story) => {
-    if (isSprintClosed) {
+    if (isSprintClosed || isProjectClosed) {
       e.preventDefault();
       return;
     }
@@ -700,35 +706,36 @@ export const KanbanBoard = () => {
       return false;
     }
 
-    // Unassigned backlog stories (no sprint_id) can be assigned to any sprint with any allowed status
-    // This takes precedence over sprint constraints because assigning from backlog is special
+    // When toggle is on and sprint is active, treat it like a non-active sprint
+    const effectiveSprintStatus = (currentSprint?.status === 'active' && currentProject?.allow_backlog_to_running_sprint)
+      ? 'non-active'
+      : currentSprint?.status;
+
+    // Special case: if moving from backlog and project allows it, only to ready
+    if (!storySprintId && currentProject?.allow_backlog_to_running_sprint) {
+      return toStatus === 'ready';
+    }
+
+    // Backlog stories (no sprint)
     if (!storySprintId) {
-      // In non-active sprints, backlog stories can ONLY be assigned to "ready"
-      if (currentSprint && currentSprint.status !== 'active') {
+      if (effectiveSprintStatus !== 'active') {
         return toStatus === 'ready';
       }
-      // In active sprints, backlog stories cannot be assigned at all
-      if (currentSprint && currentSprint.status === 'active') {
+      if (effectiveSprintStatus === 'active') {
         return false;
       }
-      // For any other sprint, allow any status
       return true;
     }
 
-    // Check sprint constraints for already-assigned stories
-    // In non-active & closed sprints: ONLY backlog ↔ ready allowed
-    if (currentSprint && currentSprint.status !== 'active') {
-      const isBacklogReadyTransition = 
+    // Assigned stories in non-active or active-with-toggle sprints: ONLY backlog ↔ ready
+    if (effectiveSprintStatus !== 'active') {
+      const isBacklogReady = 
         (fromStatus === 'backlog' && toStatus === 'ready') ||
         (fromStatus === 'ready' && toStatus === 'backlog');
-      
-      if (!isBacklogReadyTransition) {
-        return false; // Block all other transitions in non-active sprints
-      }
-      return true; // Allow backlog ↔ ready
+      return isBacklogReady;
     }
 
-    // For active sprints with assigned stories, check workflow
+    // Active sprint without toggle: check workflow transitions
     const fromStatusId = getStatusId(fromStatus);
     const toStatusId = getStatusId(toStatus);
 
@@ -827,8 +834,16 @@ export const KanbanBoard = () => {
   };
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border dark:border-gray-700 h-fit">
-      {isSprintClosed && (
+    <div className={clsx('bg-white dark:bg-gray-800 rounded-lg p-6 border dark:border-gray-700 h-fit', isProjectClosed && 'opacity-70')}>
+      {isProjectClosed && (
+        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg flex items-center gap-2">
+          <FiAlertCircle className="text-red-600 dark:text-red-400 flex-shrink-0" size={18} />
+          <p className="text-sm text-red-800 dark:text-red-300 font-medium">
+            This project is closed and read-only. No changes can be made to stories.
+          </p>
+        </div>
+      )}
+      {isSprintClosed && !isProjectClosed && (
         <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg flex items-center gap-2">
           <FiAlertCircle className="text-red-600 dark:text-red-400 flex-shrink-0" size={18} />
           <p className="text-sm text-red-800 dark:text-red-300 font-medium">
@@ -857,7 +872,8 @@ export const KanbanBoard = () => {
         <select
           value={selectedAssignee || ''}
           onChange={(e) => setSelectedAssignee(e.target.value || null)}
-          className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={isProjectClosed}
+          className="px-3 py-1 rounded text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <option value="">All Assignees</option>
           <option value="unassigned">Unassigned</option>
@@ -883,7 +899,8 @@ export const KanbanBoard = () => {
                       ...toggledStatuses,
                       [status.status_name]: e.target.checked
                     })}
-                    className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                    disabled={isProjectClosed}
+                    className="w-4 h-4 rounded border-gray-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <span className="text-sm text-gray-700 dark:text-gray-300 flex items-center gap-1">
                     <div 
@@ -924,6 +941,7 @@ export const KanbanBoard = () => {
               onOpenDetail={setSelectedStoryDetail}
               projectStatusObj={column.projectStatusObj}
               columnWidthStyle={columnWidthStyle}
+              isProjectClosed={isProjectClosed}
             />
           ))}
         </div>

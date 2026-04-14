@@ -28,7 +28,32 @@ const ConfigurationView = () => {
   };
   
   const [projects, setProjects] = useState([]);
-  const [selectedProject, setSelectedProject] = useState(null);
+  const [selectedProjectState, setSelectedProjectState] = useState(() => {
+    // Restore selectedProject from localStorage on mount
+    const saved = localStorage.getItem('configSelectedProject');
+    return saved ? parseInt(saved) : null;
+  });
+  
+  // Preserve selectedProject to localStorage whenever it changes
+  const setSelectedProject = (projectIdOrUpdater) => {
+    setSelectedProjectState(prev => {
+      const newId = typeof projectIdOrUpdater === 'function' 
+        ? projectIdOrUpdater(prev) 
+        : projectIdOrUpdater;
+      
+      // Save to localStorage
+      if (newId) {
+        localStorage.setItem('configSelectedProject', newId.toString());
+      } else {
+        localStorage.removeItem('configSelectedProject');
+      }
+      
+      console.log('setSelectedProject: updating to', newId, '(was:', prev, ')');
+      return newId;
+    });
+  };
+  
+  const selectedProject = selectedProjectState;
   const [projectStatuses, setProjectStatuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -62,6 +87,7 @@ const ConfigurationView = () => {
   // Sprint forecasting states
   const [numForecastedSprints, setNumForecastedSprints] = useState(5);
   const [defaultSprintDurationDays, setDefaultSprintDurationDays] = useState(14);
+  const [allowBacklogToRunningSprint, setAllowBacklogToRunningSprint] = useState(0);
   const [sprintSettingsSaving, setSprintSettingsSaving] = useState(false);
 
   // Track member assignments count {memberId: count}
@@ -71,6 +97,14 @@ const ConfigurationView = () => {
   const [memberSortBy, setMemberSortBy] = useState('name');
   const [memberSortOrder, setMemberSortOrder] = useState('asc');
   const [memberFilterAssigned, setMemberFilterAssigned] = useState(null);
+
+  // Project action confirmation modals
+  const [confirmAction, setConfirmAction] = useState(null); // 'close', 'delete', or null
+  const [confirmProjectId, setConfirmProjectId] = useState(null);
+  const [confirmProjectName, setConfirmProjectName] = useState('');
+
+  // Computed: Check if selected project is closed
+  const isProjectClosed = selectedProject && projects.find(p => p.id === selectedProject)?.closed_date ? true : false;
 
   // Define loadProjectStatuses BEFORE any useEffect that uses it
   const loadProjectStatuses = React.useCallback(async (projectId) => {
@@ -84,6 +118,7 @@ const ConfigurationView = () => {
       const projectResponse = await projectAPI.getById(projectId);
       setNumForecastedSprints(projectResponse.data.num_forecasted_sprints || 5);
       setDefaultSprintDurationDays(projectResponse.data.default_sprint_duration_days || 14);
+      setAllowBacklogToRunningSprint(projectResponse.data.allow_backlog_to_running_sprint || 0);
     } catch (err) {
       console.error('Failed to load project statuses/epics/settings', err);
     }
@@ -92,13 +127,21 @@ const ConfigurationView = () => {
   const loadProjects = React.useCallback(async () => {
     try {
       setLoading(true);
-      const response = await projectAPI.getAll();
+      const response = await projectAPI.getAll(true); // Load ALL projects including hidden ones
       setProjects(response.data);
-      if (response.data.length > 0 && !selectedProject) {
-        // Only auto-select if no project is currently selected
-        const projectToSelect = response.data.find(p => p.is_default) || response.data[0];
-        setSelectedProject(projectToSelect.id);
-        loadProjectStatuses(projectToSelect.id);
+      // Auto-select project if none selected, or validate the saved one still exists
+      if (response.data.length > 0) {
+        setSelectedProject(prev => {
+          // If a project is selected, verify it still exists in the list
+          if (prev && response.data.find(p => p.id === prev)) {
+            console.log('loadProjects: keeping saved project:', prev);
+            return prev;
+          }
+          // Otherwise select default or first
+          const projectToSelect = response.data.find(p => p.is_default) || response.data[0];
+          console.log('loadProjects: auto-selecting project:', projectToSelect.id, '(prev was:', prev, ')');
+          return projectToSelect.id;
+        });
       }
     } catch (err) {
       setError('Failed to load projects');
@@ -106,19 +149,23 @@ const ConfigurationView = () => {
     } finally {
       setLoading(false);
     }
-  }, [loadProjectStatuses, selectedProject]);
+  }, []);
 
+  // Load projects only once on mount
   React.useEffect(() => {
+    console.log('ConfigurationView mounted, loading projects');
     loadProjects();
-  }, [loadProjects]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Sync local selectedProject with global selectedProjectId when changed from elsewhere
+  // Load project settings whenever selectedProject changes (locally within ConfigurationView)
   React.useEffect(() => {
-    if (selectedProjectId && selectedProject !== selectedProjectId) {
-      setSelectedProject(selectedProjectId);
-      loadProjectStatuses(selectedProjectId);
+    if (selectedProject) {
+      console.log('ConfigurationView selectedProject changed to', selectedProject, ', loading settings');
+      loadProjectStatuses(selectedProject);
     }
-  }, [selectedProjectId, selectedProject, loadProjectStatuses]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProject]);
 
   // Calculate member assignment counts for the selected project
   React.useEffect(() => {
@@ -203,6 +250,7 @@ const ConfigurationView = () => {
       
       setError('✓ Project deleted successfully');
       setTimeout(() => setError(''), 3000);
+      setConfirmAction(null);
     } catch (err) {
       const errorMsg = err.response?.data?.detail || 'Failed to delete project';
       setError(errorMsg);
@@ -210,9 +258,55 @@ const ConfigurationView = () => {
     }
   };
 
+  const handleCloseProject = async (projectId) => {
+    try {
+      const response = await projectAPI.close(projectId);
+      
+      // Update local projects list
+      setProjects(projects.map(p => p.id === projectId ? response.data : p));
+      
+      // Refresh global context to update projects list everywhere
+      await refreshProjectsAndTeamMembers();
+      
+      setError('✓ Project closed successfully. Active sprint auto-closed, non-done stories moved to backlog.');
+      setTimeout(() => setError(''), 5000);
+      setConfirmAction(null);
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || 'Failed to close project';
+      setError(errorMsg);
+      console.error(err);
+    }
+  };
+
+  const handleToggleHideProject = async (projectId, currentHideState) => {
+    try {
+      const response = await projectAPI.update(projectId, {
+        is_hidden: !currentHideState
+      });
+      
+      // Update local projects list
+      setProjects(projects.map(p => p.id === projectId ? response.data : p));
+      
+      // Refresh global context
+      await refreshProjectsAndTeamMembers();
+      
+      const action = !currentHideState ? 'hidden' : 'unhidden';
+      setError(`✓ Project ${action} successfully`);
+      setTimeout(() => setError(''), 3000);
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || 'Failed to toggle project visibility';
+      setError(errorMsg);
+      console.error(err);
+    }
+  };
+
   const handleUpdateSprintSettings = async (e) => {
     e.preventDefault();
-    if (!selectedProject) return;
+    console.log('handleUpdateSprintSettings called, selectedProject:', selectedProject);
+    if (!selectedProject) {
+      console.log('No selected project, returning');
+      return;
+    }
 
     setSprintSettingsSaving(true);
     try {
@@ -221,6 +315,7 @@ const ConfigurationView = () => {
       localStorage.setItem('selectedProjectId', currentProjectId.toString());
       
       // Validate sprint reduction
+      console.log('Checking sprint reduction for project', selectedProject, 'with new count', numForecastedSprints);
       const validation = await projectAPI.checkSprintReduction(selectedProject, numForecastedSprints);
       if (!validation.data.allowed) {
         setError(validation.data.message);
@@ -229,26 +324,40 @@ const ConfigurationView = () => {
       }
 
       // If validation passed, update the project
-      await projectAPI.update(selectedProject, {
+      const updateData = {
         num_forecasted_sprints: numForecastedSprints,
-        default_sprint_duration_days: defaultSprintDurationDays
-      });
+        default_sprint_duration_days: defaultSprintDurationDays,
+        allow_backlog_to_running_sprint: allowBacklogToRunningSprint
+      };
+      console.log('Sending PUT request to update project', selectedProject, 'with data:', updateData);
+      const response = await projectAPI.update(selectedProject, updateData);
+      console.log('Project update response:', response);
       
-      // Refresh projects and global data to update all dropdowns
-      console.log('Refreshing projects and data after sprint settings update...');
-      await loadProjects();
+      // Update local state immediately from response to avoid flickering
+      if (response.data) {
+        console.log('Updating local state from response:', response.data);
+        setNumForecastedSprints(response.data.num_forecasted_sprints || 5);
+        setDefaultSprintDurationDays(response.data.default_sprint_duration_days || 14);
+        setAllowBacklogToRunningSprint(response.data.allow_backlog_to_running_sprint || 0);
+      }
+      
+      // Refresh the global projects list in AppContext so KanbanBoard and BacklogView see the updated toggle
+      console.log('Refreshing projects in AppContext...');
       await refreshProjectsAndTeamMembers();
-      await fetchAllData();
+      
+      // Just refresh the project-specific settings without redundant calls
+      console.log('Reloading project settings after save...');
+      await loadProjectStatuses(currentProjectId);
       
       setError('✓ Sprint settings updated successfully');
       setTimeout(() => setError(''), 3000);
     } catch (err) {
+      console.error('Error updating sprint settings:', err);
       if (err.response?.data?.detail) {
         setError(err.response.data.detail);
       } else {
-        setError('Failed to update sprint settings');
+        setError('Failed to update sprint settings: ' + (err.message || 'Unknown error'));
       }
-      console.error(err);
     } finally {
       setSprintSettingsSaving(false);
     }
@@ -373,7 +482,7 @@ const ConfigurationView = () => {
       }
       
       // Reload projects locally without affecting selectedProjectId in ConfigurationView
-      const response = await projectAPI.getAll();
+      const response = await projectAPI.getAll(true); // Load ALL projects including hidden ones
       setProjects(response.data);
       
       // Refresh global context with updated projects and team members
@@ -824,42 +933,94 @@ const ConfigurationView = () => {
                       'p-4 rounded-lg border-2 cursor-pointer transition',
                       selectedProject === project.id
                         ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:border-blue-300'
+                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:border-blue-300',
+                      project.closed_date && 'opacity-75'
                     )}
                     onClick={() => {
-                      setProjectAndLoadStatuses(project.id);
+                      console.log('Clicking project', project.id);
                       setSelectedProject(project.id);
-                      loadProjectStatuses(project.id);
+                      // Settings will be loaded by useEffect when selectedProject changes
                     }}
                   >
-                    <div className="flex justify-between items-start">
+                    <div className="flex justify-between items-start gap-4">
                       <div className="flex-1">
-                        <h4 className="font-semibold text-gray-900 dark:text-white">
-                          {project.name}
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-semibold text-gray-900 dark:text-white">
+                            {project.name}
+                          </h4>
                           {project.is_default && (
-                            <span className="ml-2 text-xs bg-yellow-200 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 px-2 py-1 rounded">
+                            <span className="text-xs bg-yellow-200 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 px-2 py-1 rounded">
                               Default
                             </span>
                           )}
-                        </h4>
+                          {project.closed_date && (
+                            <span className="text-xs bg-red-200 dark:bg-red-900/50 text-red-800 dark:text-red-300 px-2 py-1 rounded font-medium">
+                              Closed
+                            </span>
+                          )}
+                          {project.is_hidden && (
+                            <span className="text-xs bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-300 px-2 py-1 rounded">
+                              Hidden
+                            </span>
+                          )}
+                        </div>
                         {project.description && (
                           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{project.description}</p>
                         )}
                         <p className="text-xs text-gray-500 dark:text-gray-500 mt-2">
                           {project.team_members?.length || 0} team members • {project.statuses?.length || 0} statuses
+                          {project.closed_date && (
+                            <>
+                              {' • '}
+                              <span className="text-red-600 dark:text-red-400">Closed: {new Date(project.closed_date).toLocaleDateString()}</span>
+                            </>
+                          )}
                         </p>
                       </div>
-                      {!project.is_default && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteProject(project.id);
-                          }}
-                          className="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
-                        >
-                          <FiTrash2 size={18} />
-                        </button>
-                      )}
+                      <div className="flex gap-2 flex-shrink-0">
+                        {project.closed_date ? (
+                          <>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleHideProject(project.id, project.is_hidden);
+                              }}
+                              className="px-3 py-1 text-sm bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-300 rounded transition"
+                              title={project.is_hidden ? "Unhide project" : "Hide project"}
+                            >
+                              {project.is_hidden ? '👁️ Show' : '👁️‍🗨️ Hide'}
+                            </button>
+                            {/* IMPORTANT: Delete Project button - this permanently deletes the project and all related data (cannot be undone) */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmAction('delete');
+                                setConfirmProjectId(project.id);
+                                setConfirmProjectName(project.name);
+                              }}
+                              className="px-4 py-2 text-base font-semibold bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition shadow-md hover:shadow-lg transform hover:scale-105"
+                              title="Permanently delete this closed project and all related data - this action cannot be undone"
+                            >
+                              🗑️ Delete Permanently
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmAction('close');
+                                setConfirmProjectId(project.id);
+                                setConfirmProjectName(project.name);
+                              }}
+                              className="px-4 py-2 text-base font-semibold bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white rounded-lg transition shadow-md hover:shadow-lg transform hover:scale-105"
+                              title="Close this project - this will close any active sprint and make the project read-only"
+                            >
+                              🔒 Close Project
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -868,17 +1029,25 @@ const ConfigurationView = () => {
               {/* Team Assignment Section */}
               {selectedProject && (
                 <div className="bg-purple-50 dark:bg-gray-700 p-4 rounded-lg space-y-3">
-                  <h4 className="font-semibold text-gray-900 dark:text-white mb-4">
-                    Manage Team Members
-                  </h4>
+                  <div className="flex justify-between items-center mb-4">
+                    <h4 className="font-semibold text-gray-900 dark:text-white">
+                      Manage Team Members
+                    </h4>
+                    {projects.find(p => p.id === selectedProject)?.closed_date && (
+                      <span className="text-xs bg-red-200 dark:bg-red-900/50 text-red-800 dark:text-red-300 px-2 py-1 rounded font-medium">
+                        Read-Only (Closed)
+                      </span>
+                    )}
+                  </div>
                   <MemberAssignmentTable
                     teamMembers={teamMembers || []}
                     projectMembers={projects.find(p => p.id === selectedProject)?.team_members || []}
                     memberAssignmentCounts={memberAssignmentCounts}
-                    onToggleMember={(memberId, isAssigned) => 
+                    onToggleMember={isProjectClosed ? undefined : (memberId, isAssigned) => 
                       handleToggleProjectMember(selectedProject, memberId, isAssigned)
                     }
                     loading={loading}
+                    isReadOnly={isProjectClosed}
                     sortBy={memberSortBy}
                     sortOrder={memberSortOrder}
                     onSortChange={(column, order) => {
@@ -905,6 +1074,16 @@ const ConfigurationView = () => {
       {/* Status Tab */}
       {activeTab === 'statuses' && (
         <div className="space-y-4">
+          {isProjectClosed && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <p className="font-semibold text-red-900 dark:text-red-100">Project is Closed and Read-Only</p>
+                <p className="text-sm text-red-800 dark:text-red-200 mt-1">Status changes are disabled for closed projects. You can view existing statuses but cannot create, edit, or delete them.</p>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
               Project Statuses & Colors
@@ -918,35 +1097,39 @@ const ConfigurationView = () => {
           
           {selectedProject ? (
             <>
-              <form onSubmit={handleCreateStatus} className="bg-blue-50 dark:bg-gray-700 p-4 rounded-lg space-y-3">
+              <form onSubmit={handleCreateStatus} className={clsx('bg-blue-50 dark:bg-gray-700 p-4 rounded-lg space-y-3', isProjectClosed && 'opacity-50 pointer-events-none')}>
                 <div className="flex gap-4 items-end">
                   <input
                     type="text"
                     placeholder="Status name (e.g., Testing, Review)"
                     value={newStatusName}
                     onChange={(e) => setNewStatusName(e.target.value)}
-                    className="flex-1 px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                    disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                    className="flex-1 px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <input
                     type="color"
                     value={newStatusColor}
                     onChange={(e) => setNewStatusColor(e.target.value)}
-                    className="w-12 h-10 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
+                    disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                    className="w-12 h-10 rounded border border-gray-300 dark:border-gray-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Status color"
                   />
-                  <label className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-gray-600 rounded border border-gray-300 dark:border-gray-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-500 transition">
+                  <label className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-gray-600 rounded border border-gray-300 dark:border-gray-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-500 transition disabled:opacity-50 disabled:cursor-not-allowed">
                     <input
                       type="checkbox"
                       checked={newStatusIsFinal}
                       onChange={(e) => setNewStatusIsFinal(e.target.checked)}
-                      className="w-4 h-4 rounded cursor-pointer"
+                      disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                      className="w-4 h-4 rounded cursor-pointer disabled:cursor-not-allowed"
                       title="Mark as final/closing status"
                     />
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Final</span>
                   </label>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-2"
+                    disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <FiPlus size={18} /> Add
                   </button>
@@ -987,7 +1170,7 @@ const ConfigurationView = () => {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {editingStatus === status.id ? (
+                            {editingStatus === status.id && !isProjectClosed ? (
                               <input
                                 type="color"
                                 defaultValue={status.color}
@@ -1009,22 +1192,23 @@ const ConfigurationView = () => {
                             ) : (
                               <button
                                 onClick={() => setEditingStatus(status.id)}
-                                className="p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-gray-700 rounded transition"
-                                title="Edit color"
+                                disabled={isProjectClosed}
+                                className="p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-gray-700 rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={isProjectClosed ? "Cannot edit: project is closed" : "Edit color"}
                               >
                                 <FiEdit2 size={18} />
                               </button>
                             )}
                             <button
                               onClick={() => handleDeleteStatus(status.id)}
-                              disabled={!canDelete}
+                              disabled={!canDelete || isProjectClosed}
                               className={clsx(
                                 'p-2 rounded transition',
-                                canDelete
-                                  ? 'text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-gray-700 cursor-pointer'
-                                  : 'text-gray-400 dark:text-gray-600 cursor-not-allowed opacity-50'
+                                !canDelete || isProjectClosed
+                                  ? 'text-gray-400 dark:text-gray-600 cursor-not-allowed opacity-50'
+                                  : 'text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-gray-700 cursor-pointer'
                               )}
-                              title={canDelete ? 'Delete status' : (usageCount > 0 ? 'Cannot delete: status in use' : 'Cannot delete default status')}
+                              title={isProjectClosed ? "Cannot delete: project is closed" : (canDelete ? 'Delete status' : (usageCount > 0 ? 'Cannot delete: status in use' : 'Cannot delete default status'))}
                             >
                               <FiTrash2 size={18} />
                             </button>
@@ -1047,38 +1231,60 @@ const ConfigurationView = () => {
       {/* Workflow Tab */}
       {activeTab === 'workflow' && (
         <div className="h-screen flex flex-col">
-          {selectedProject ? (
-            projectStatuses && projectStatuses.length > 0 ? (
-              <WorkflowDesigner
-                projectId={selectedProject}
-                projects={projects}
-                statuses={projectStatuses}
-                onWorkflowUpdate={() => {
-                  // Refresh statuses after workflow update
-                  if (selectedProject) {
-                    projectAPI.getStatuses(selectedProject).then(res => {
-                      setProjectStatuses(res.data || []);
-                    });
-                  }
-                }}
-                setError={setError}
-              />
-            ) : (
-              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                Loading workflow...
+          {isProjectClosed && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3 mb-4">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <p className="font-semibold text-red-900 dark:text-red-100">Project is Closed and Read-Only</p>
+                <p className="text-sm text-red-800 dark:text-red-200 mt-1">Workflow design cannot be modified for closed projects.</p>
               </div>
-            )
-          ) : (
-            <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
-              Select a project to configure workflow
             </div>
           )}
+
+          <div className={clsx('flex-1', isProjectClosed && 'opacity-50 pointer-events-none')}>
+            {selectedProject ? (
+              projectStatuses && projectStatuses.length > 0 ? (
+                <WorkflowDesigner
+                  projectId={selectedProject}
+                  projects={projects}
+                  statuses={projectStatuses}
+                  onWorkflowUpdate={() => {
+                    // Refresh statuses after workflow update
+                    if (selectedProject) {
+                      projectAPI.getStatuses(selectedProject).then(res => {
+                        setProjectStatuses(res.data || []);
+                      });
+                    }
+                  }}
+                  setError={setError}
+                />
+              ) : (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  Loading workflow...
+                </div>
+              )
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
+                Select a project to configure workflow
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* Epics Tab */}
       {activeTab === 'epics' && (
         <div className="space-y-4">
+          {isProjectClosed && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <p className="font-semibold text-red-900 dark:text-red-100">Project is Closed and Read-Only</p>
+                <p className="text-sm text-red-800 dark:text-red-200 mt-1">Epic changes are disabled for closed projects. You can view existing epics but cannot create, edit, or delete them.</p>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Project Epics</h3>
             {selectedProject && (
@@ -1090,32 +1296,36 @@ const ConfigurationView = () => {
 
           {selectedProject ? (
             <>
-              <form onSubmit={handleCreateEpic} className="bg-blue-50 dark:bg-gray-700 p-4 rounded-lg space-y-3">
+              <form onSubmit={handleCreateEpic} className={clsx('bg-blue-50 dark:bg-gray-700 p-4 rounded-lg space-y-3', isProjectClosed && 'opacity-50 pointer-events-none')}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <input
                     type="text"
                     placeholder="Epic name (e.g., Authentication, Dashboard)"
                     value={newEpicName}
                     onChange={(e) => setNewEpicName(e.target.value)}
-                    className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                    disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                    className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <input
                     type="color"
                     value={newEpicColor}
                     onChange={(e) => setNewEpicColor(e.target.value)}
-                    className="w-full h-10 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
+                    disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                    className="w-full h-10 rounded border border-gray-300 dark:border-gray-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
                 <textarea
                   placeholder="Description (optional)"
                   value={newEpicDesc}
                   onChange={(e) => setNewEpicDesc(e.target.value)}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                  disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-600 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   rows="2"
                 />
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-2"
+                  disabled={projects.find(p => p.id === selectedProject)?.closed_date}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <FiPlus size={18} /> Create Epic
                 </button>
@@ -1210,6 +1420,16 @@ const ConfigurationView = () => {
       {/* Sprint Settings Tab */}
       {activeTab === 'sprint-settings' && (
         <div className="space-y-6">
+          {isProjectClosed && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <p className="font-semibold text-red-900 dark:text-red-100">Project is Closed and Read-Only</p>
+                <p className="text-sm text-red-800 dark:text-red-200 mt-1">Sprint settings cannot be modified for closed projects.</p>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Sprint Planning</h3>
@@ -1225,7 +1445,7 @@ const ConfigurationView = () => {
           </div>
 
           {selectedProject ? (
-            <form onSubmit={handleUpdateSprintSettings} className="space-y-4">
+            <form onSubmit={handleUpdateSprintSettings} className={clsx('space-y-4', isProjectClosed && 'opacity-50 pointer-events-none')}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Number of Forecasted Sprints */}
                 <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-300 dark:border-gray-600">
@@ -1238,7 +1458,8 @@ const ConfigurationView = () => {
                     max="100"
                     value={numForecastedSprints}
                     onChange={(e) => setNumForecastedSprints(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    disabled={isProjectClosed}
+                    className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                     Total number of sprints planned for this project
@@ -1256,7 +1477,8 @@ const ConfigurationView = () => {
                     max="60"
                     value={defaultSprintDurationDays}
                     onChange={(e) => setDefaultSprintDurationDays(Math.max(1, parseInt(e.target.value) || 14))}
-                    className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    disabled={isProjectClosed}
+                    className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                     Default duration in days. When a sprint starts, this duration automatically calculates the end date.
@@ -1271,13 +1493,41 @@ const ConfigurationView = () => {
                 </p>
               </div>
 
+              {/* Allow Backlog to Running Sprint Toggle */}
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-300 dark:border-gray-600">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-1">
+                      Allow Backlog → Running Sprint
+                    </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Enable moving stories from backlog to/from active sprints in Kanban and Backlog views
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAllowBacklogToRunningSprint(allowBacklogToRunningSprint ? 0 : 1)}
+                    disabled={isProjectClosed}
+                    className={clsx(
+                      'ml-4 px-3 py-2 rounded font-medium text-sm transition flex-shrink-0',
+                      allowBacklogToRunningSprint
+                        ? 'bg-green-600 hover:bg-green-700 text-white'
+                        : 'bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-400 dark:hover:bg-gray-500',
+                      isProjectClosed && 'opacity-50 cursor-not-allowed'
+                    )}
+                  >
+                    {allowBacklogToRunningSprint ? '✓ Enabled' : 'Disabled'}
+                  </button>
+                </div>
+              </div>
+
               {/* Save Button */}
               <div className="flex gap-2">
                 <button
                   type="submit"
-                  disabled={sprintSettingsSaving}
+                  disabled={sprintSettingsSaving || isProjectClosed}
                   className={`px-4 py-2 rounded font-medium transition ${
-                    sprintSettingsSaving
+                    sprintSettingsSaving || isProjectClosed
                       ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                   }`}
@@ -1295,6 +1545,16 @@ const ConfigurationView = () => {
       {/* Import CSV Tab */}
       {activeTab === 'import' && (
         <div className="space-y-6">
+          {isProjectClosed && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <p className="font-semibold text-red-900 dark:text-red-100">Project is Closed and Read-Only</p>
+                <p className="text-sm text-red-800 dark:text-red-200 mt-1">Import is disabled for closed projects. Close the project first if you want to make changes.</p>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Import User Stories from CSV</h3>
@@ -1310,14 +1570,15 @@ const ConfigurationView = () => {
           </div>
 
           {selectedProject ? (
-            <div className="space-y-4">
+            <div className={clsx('space-y-4', isProjectClosed && 'opacity-50 pointer-events-none')}>
               {/* Drag and Drop Zone */}
               <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
+                onDragOver={isProjectClosed ? undefined : handleDragOver}
+                onDragLeave={isProjectClosed ? undefined : handleDragLeave}
+                onDrop={isProjectClosed ? undefined : handleDrop}
                 className={`border-2 border-dashed rounded-lg p-8 text-center transition ${
-                  importDropActive
+                  isProjectClosed ? 'border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700/30'
+                  : importDropActive
                     ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                     : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/30 hover:border-blue-400'
                 }`}
@@ -1325,11 +1586,12 @@ const ConfigurationView = () => {
                 <input
                   type="file"
                   accept=".csv"
-                  onChange={handleFileChange}
+                  onChange={isProjectClosed ? undefined : handleFileChange}
+                  disabled={isProjectClosed}
                   className="hidden"
                   id="csv-file-input"
                 />
-                <label htmlFor="csv-file-input" className="cursor-pointer">
+                <label htmlFor="csv-file-input" className={isProjectClosed ? 'cursor-not-allowed' : 'cursor-pointer'}>
                   <div className="flex flex-col items-center gap-2">
                     <FiUpload size={32} className="text-blue-600 dark:text-blue-400" />
                     <p className="font-medium text-gray-900 dark:text-white">
@@ -1346,9 +1608,9 @@ const ConfigurationView = () => {
               <div className="flex gap-2">
                 <button
                   onClick={handleImportCSV}
-                  disabled={importLoading || !importFile}
+                  disabled={importLoading || !importFile || isProjectClosed}
                   className={`px-4 py-2 rounded font-medium flex items-center gap-2 transition ${
-                    importLoading || !importFile
+                    importLoading || !importFile || isProjectClosed
                       ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                   }`}
@@ -1540,6 +1802,71 @@ Profile,US3.1,"As a user I want to manage my profile so I can update my informat
       {/* Settings Tab - Configuration Management */}
       {activeTab === 'settings' && (
         <ConfigurationManagement />
+      )}
+
+      {/* Close Project Confirmation Modal */}
+      {confirmAction === 'close' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Close Project?</h3>
+            <div className="text-gray-600 dark:text-gray-400 space-y-2">
+              <p>Are you sure you want to close <strong>{confirmProjectName}</strong>?</p>
+              <ul className="text-sm list-disc list-inside space-y-1 text-gray-500 dark:text-gray-500">
+                <li>Active sprint will be automatically closed</li>
+                <li>Non-done stories will be moved back to backlog</li>
+                <li>Project will become read-only</li>
+                <li>Project will be hidden from dropdowns</li>
+              </ul>
+            </div>
+            <div className="flex gap-3 pt-4">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="flex-1 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleCloseProject(confirmProjectId)}
+                className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded transition"
+              >
+                Close Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Project Confirmation Modal */}
+      {confirmAction === 'delete' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Delete Project?</h3>
+            <div className="text-gray-600 dark:text-gray-400 space-y-2">
+              <p>Permanently delete <strong>{confirmProjectName}</strong>?</p>
+              <ul className="text-sm list-disc list-inside space-y-1 text-gray-500 dark:text-gray-500">
+                <li>All sprints will be deleted</li>
+                <li>All user stories will be deleted</li>
+                <li>All epics will be deleted</li>
+                <li>All team member assignments will be removed</li>
+                <li className="text-red-600 dark:text-red-400 font-semibold">This action cannot be undone</li>
+              </ul>
+            </div>
+            <div className="flex gap-3 pt-4">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="flex-1 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDeleteProject(confirmProjectId)}
+                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition font-semibold"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

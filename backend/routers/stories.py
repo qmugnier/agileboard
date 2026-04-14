@@ -139,6 +139,7 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
     # Check if story is in a closed sprint and if we're reopening to backlog
     is_reopening_closed_sprint = False
     update_dict = update_data.model_dump(exclude_unset=True)
+    print(f"DEBUG: UPDATE REQUEST - story_id={story_id}, update_dict={update_dict}")
     
     if story.sprint_id:
         sprint = db.query(Sprint).filter(Sprint.id == story.sprint_id).first()
@@ -159,12 +160,17 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
         ProjectStatus.status_name == story.status
     ).first()
     
+    print(f"DEBUG: Final status check - story.status={story.status}, current_status_obj={current_status_obj}, is_final={current_status_obj.is_final if current_status_obj else 'None'}")
+    
     if current_status_obj and current_status_obj.is_final:
         if "status" not in update_dict:
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot edit story in final status '{story.status}'. Change status to a working state first."
             )
+        else:
+            print(f"DEBUG: Story is in final status but updating to new status, which is allowed for reopens")
+
     
     # Validate sprint assignment
     if "sprint_id" in update_dict:
@@ -172,18 +178,27 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
             new_sprint = db.query(Sprint).filter(Sprint.id == update_dict["sprint_id"]).first()
             if new_sprint:
                 if not story.sprint_id and new_sprint.status == "active":
-                    raise HTTPException(status_code=400, detail="Cannot add new stories from backlog to an active sprint")
+                    # Check if project allows backlog to running sprint moves
+                    project = db.query(Project).filter(Project.id == story.project_id).first()
+                    if not project or not project.allow_backlog_to_running_sprint:
+                        raise HTTPException(status_code=400, detail="Cannot add new stories from backlog to an active sprint")
                 if new_sprint.status == "closed":
                     raise HTTPException(status_code=400, detail="Cannot assign stories to a closed sprint")
         else:  # Clearing sprint_id (removing from sprint)
-            # Block removal from active sprint unless it's a closed sprint
+            # Allow removal from active sprint if project allows backlog-to-running-sprint moves
             if story.sprint_id:
                 sprint = db.query(Sprint).filter(Sprint.id == story.sprint_id).first()
                 if sprint and sprint.status == "active":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot remove stories from an active sprint. Story must be completed (final status) to close it, or close the sprint first."
-                    )
+                    # Check if project allows backlog to running sprint moves
+                    project = db.query(Project).filter(Project.id == story.project_id).first()
+                    print(f"DEBUG: Removing from active sprint - project={project.id if project else 'None'}, allow_backlog_to_running_sprint={project.allow_backlog_to_running_sprint if project else 'None'}")
+                    if not project or not project.allow_backlog_to_running_sprint:
+                        print(f"DEBUG: Blocking removal - project not found or setting disabled")
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot remove stories from an active sprint. Story must be completed (final status) to close it, or close the sprint first."
+                        )
+                    print(f"DEBUG: Allowing removal from active sprint")
     
     # Check blocking dependencies before status change validation
     if "status" in update_dict and update_dict.get("status") != story.status:
@@ -192,25 +207,31 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
             ProjectStatus.status_name == update_dict.get("status")
         ).first()
         
-        # Prevent moving stories to backlog when in an active sprint (unless reopening from final status)
+        # Prevent moving stories to backlog when in an active sprint (unless reopening from final status or project allows it)
         new_status = update_dict.get("status")
         if new_status == "backlog":
             # Check if story is currently in ANY sprint
             if story.sprint_id:
                 sprint = db.query(Sprint).filter(Sprint.id == story.sprint_id).first()
                 if sprint and sprint.status == "active":
-                    # Check if this is a reopen (from final status) - allowed
-                    current_status_obj = db.query(ProjectStatus).filter(
-                        ProjectStatus.project_id == story.project_id,
-                        ProjectStatus.status_name == story.status
-                    ).first()
-                    is_reopening_from_final = (current_status_obj and current_status_obj.is_final)
-                    
-                    if not is_reopening_from_final:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Cannot move stories to backlog when in an active sprint. Story must be completed (final status) to close it, or close the sprint first."
-                        )
+                    # Check if project allows backlog to running sprint moves
+                    project = db.query(Project).filter(Project.id == story.project_id).first()
+                    if project and project.allow_backlog_to_running_sprint:
+                        # If allowed, can move to backlog from active sprint
+                        pass  # Allow the move
+                    else:
+                        # Check if this is a reopen (from final status) - allowed
+                        current_status_obj = db.query(ProjectStatus).filter(
+                            ProjectStatus.project_id == story.project_id,
+                            ProjectStatus.status_name == story.status
+                        ).first()
+                        is_reopening_from_final = (current_status_obj and current_status_obj.is_final)
+                        
+                        if not is_reopening_from_final:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Cannot move stories to backlog when in an active sprint. Story must be completed (final status) to close it, or close the sprint first."
+                            )
         
         # If closing (moving to final status), check if blocking other stories
         if new_status_obj and new_status_obj.is_final:
@@ -226,6 +247,7 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
     if "status" in update_dict and update_dict.get("status") != story.status:
         current_status = story.status
         new_status = update_dict.get("status")
+        print(f"DEBUG: ENTERING status validation - story.id={story_id}, current_status='{current_status}' (type={type(current_status)}), new_status='{new_status}', story.sprint_id={story.sprint_id}")
         
         # Get status objects to check for final status
         current_status_obj = db.query(ProjectStatus).filter(
@@ -237,21 +259,76 @@ def update_user_story(story_id: str, update_data: UserStoryUpdate, db: Session =
             ProjectStatus.status_name == new_status
         ).first()
         
+        print(f"DEBUG: Looking up statuses for project_id={story.project_id}")
+        print(f"DEBUG:   current_status='{current_status}' -> obj={current_status_obj}")
+        if current_status_obj:
+            print(f"DEBUG:     id={current_status_obj.id}, status_name={current_status_obj.status_name}, is_final={current_status_obj.is_final}")
+        print(f"DEBUG:   new_status='{new_status}' -> obj={new_status_obj}")
+        if new_status_obj:
+            print(f"DEBUG:     id={new_status_obj.id}, status_name={new_status_obj.status_name}, is_final={new_status_obj.is_final}")
+        
+        print(f"DEBUG: current_status_obj={current_status_obj}, is_final={current_status_obj.is_final if current_status_obj else 'N/A'}")
+        print(f"DEBUG: new_status_obj={new_status_obj}, is_final={new_status_obj.is_final if new_status_obj else 'N/A'}")
+        
         # Check if this is a reopen operation (transitioning from final to non-final status)
         is_reopening = (current_status_obj and current_status_obj.is_final and 
                        new_status_obj and not new_status_obj.is_final)
+        print(f"DEBUG: is_reopening={is_reopening}")
+        
+        # Check if story is moving from backlog to a sprint (special project feature)
+        is_backlog_to_sprint_move = False
+        print(f"DEBUG: Checking backlog-to-sprint:")
+        print(f"DEBUG:   story.sprint_id={story.sprint_id} (is falsy: {not story.sprint_id})")
+        print(f"DEBUG:   'sprint_id' in update_dict: {'sprint_id' in update_dict}")
+        print(f"DEBUG:   update_dict.get('sprint_id')={update_dict.get('sprint_id')}")
+        
+        if not story.sprint_id and "sprint_id" in update_dict and update_dict.get("sprint_id"):
+            # Story currently has no sprint and is being assigned to one
+            project = db.query(Project).filter(Project.id == story.project_id).first()
+            print(f"DEBUG:   project={project.id if project else None}, allow_backlog_to_running_sprint={project.allow_backlog_to_running_sprint if project else None}")
+            if project and project.allow_backlog_to_running_sprint:
+                is_backlog_to_sprint_move = True
+                print(f"DEBUG:   -> IS BACKLOG TO SPRINT MOVE")
+        
+        # If in active sprint with toggle on, only allow backlog ↔ ready transitions
+        if story.sprint_id:
+            sprint = db.query(Sprint).filter(Sprint.id == story.sprint_id).first()
+            if sprint and sprint.status == "active":
+                project = db.query(Project).filter(Project.id == story.project_id).first()
+                if project and project.allow_backlog_to_running_sprint:
+                    # Only allow backlog ↔ ready
+                    is_backlog_ready = (
+                        (current_status == "backlog" and new_status == "ready") or
+                        (current_status == "ready" and new_status == "backlog")
+                    )
+                    if not is_backlog_ready:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Cannot transition from '{current_status}' to '{new_status}' - active sprint with special mode only allows 'Backlog ↔ Ready' transitions"
+                        )
+        
         
         # Skip validation if:
         # 1. Current status is "backlog" (virtual status for unassigned stories)
         # 2. New status is "backlog" AND (currently NOT in active sprint OR is reopening from final)
         # 3. Reopening from a closed sprint (any status change allowed)
         # 4. Reopening from a final status to a working status (reopen exception)
+        # 5. Moving from backlog to a sprint (special project feature)
         skip_transition_validation = (
             current_status == "backlog" or 
             is_reopening_closed_sprint or 
             is_reopening or
-            (new_status == "backlog" and not story.sprint_id)  # Moving backlog stories (not in any sprint)
+            (new_status == "backlog" and not story.sprint_id) or  # Moving backlog stories (not in any sprint)
+            is_backlog_to_sprint_move  # Moving from backlog to a sprint when allowed
         )
+        
+        print(f"DEBUG: Skip validation conditions:")
+        print(f"  current_status=='backlog': {current_status == 'backlog'}")
+        print(f"  is_reopening_closed_sprint: {is_reopening_closed_sprint}")
+        print(f"  is_reopening: {is_reopening}")
+        print(f"  (new_status=='backlog' and not story.sprint_id): {(new_status == 'backlog' and not story.sprint_id)}")
+        print(f"  is_backlog_to_sprint_move: {is_backlog_to_sprint_move}")
+        print(f"  skip_transition_validation={skip_transition_validation}")
         
         if not skip_transition_validation:
             # Only validate transition if both statuses exist in the project

@@ -69,6 +69,9 @@ class Project(Base):
     name = Column(String, unique=True, index=True)
     description = Column(Text, nullable=True)
     is_default = Column(Integer, default=0)  # SQLite boolean
+    is_hidden = Column(Integer, default=0)  # Hide from project dropdown when closed
+    closed_date = Column(DateTime, nullable=True)  # When project was closed
+    allow_backlog_to_running_sprint = Column(Integer, default=0)  # Allow moving backlog to running sprint
     num_forecasted_sprints = Column(Integer, default=5)  # Number of planned sprints
     default_sprint_duration_days = Column(Integer, default=14)  # Default sprint duration in days
     created_at = Column(DateTime, default=datetime.utcnow)
