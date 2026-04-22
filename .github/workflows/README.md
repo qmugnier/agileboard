@@ -37,14 +37,14 @@ Triggered only on push to `main` or `develop` branches (not on PRs).
 **Backend Build:**
 - Set up Docker Buildx
 - Build backend Docker image with tags:
-  - `harbor.exotec.com/exotec_product_infra/agile-board-backend:<commit-sha>`
-  - `harbor.exotec.com/exotec_product_infra/agile-board-backend:latest`
+  - `$REGISTRY/$REPO/agile-board-backend:<commit-sha>`
+  - `$REGISTRY/$REPO/agile-board-backend:latest`
 
 **Frontend Build:**
 - Set up Docker Buildx
 - Build frontend Docker image with tags:
-  - `harbor.exotec.com/exotec_product_infra/agile-board-frontend:<commit-sha>`
-  - `harbor.exotec.com/exotec_product_infra/agile-board-frontend:latest`
+  - `$REGISTRY/$REPO/agile-board-frontend:<commit-sha>`
+  - `$REGISTRY/$REPO/agile-board-frontend:latest`
 
 ### 3. Push Stage (main branch only)
 
@@ -101,8 +101,8 @@ Access artifacts in GitHub UI: Actions → Latest run → Artifacts
 The workflow uses these environment variables (editable in workflow file):
 
 ```yaml
-REGISTRY: harbor.exotec.com
-IMAGE_REPO: exotec_product_infra
+REGISTRY: xxxxxxx
+IMAGE_REPO: xxxx_product_infra
 BACKEND_IMAGE_NAME: agile-board-backend
 FRONTEND_IMAGE_NAME: agile-board-frontend
 ```
